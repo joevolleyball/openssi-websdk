@@ -135,7 +135,7 @@ class Agent {
 	/**
 	 * Set user and password for user's Agent
 	 *
-	 * @param {string} user A TI Agent identity.
+	 * @param {string} id A TI Agent identity.
 	 * @param {string} pw The password for the Agency identity.
 	 * @returns {void}
 	 */
@@ -227,70 +227,53 @@ class Agent {
 	 * some password, and then change that password as the agent that was created.  This function attempts to handle
 	 * both self-registration and non-self-registration scenarios.
 	 *
-	 * @param {string} account_admin_agent_name The admin agent on this agent's account. Only needed if create is true.
+	 * @param {string} account_admin_agent_id The admin agent on this agent's account. Only needed if create is true.
 	 * @param {string} account_admin_agent_password The admin agent's password.
 	 * @return {Promise<AgentInfo>} A promise that resolves with information about the agent that was created.
 	 */
-	async createIdentity (account_admin_agent_name, account_admin_agent_password) {
-		if (!account_admin_agent_name || typeof account_admin_agent_name !== 'string')
+	async createIdentity (account_admin_agent_id, account_admin_agent_password) {
+		if (!account_admin_agent_id || typeof account_admin_agent_id !== 'string')
 			throw new TypeError('Account\'s admin agent name was not provided');
 		if (!account_admin_agent_password || typeof account_admin_agent_password !== 'string')
 			throw new TypeError('Invalid admin agent password');
 
-		const admin_auth = 'Basic ' + Buffer.from(account_admin_agent_name + ':' + account_admin_agent_password).toString('base64');
+		const admin_auth = 'Basic ' + Buffer.from(account_admin_agent_id + ':' + account_admin_agent_password).toString('base64');
 
-		this.logger.info('Determining if self-registration is enabled on the agent');
-		const settings = await this.request('settings', {
-			'headers': {'Authorization': admin_auth},
-		});
-		if (settings && settings.self_registration) {
-			this.logger.info('Self registration is enabled.  Don\'t need to change the password');
-			this.logger.info(`Creating agent: ${this.user}`);
+		this.logger.info(`Creating agent: ${this.user}`);
+		try {
 			const r = await this.request('agents', {
 				'headers': {'Authorization': admin_auth},
 				'method': 'POST',
-				'body': JSON.stringify({'id': this.id, 'name': this.user, 'password': this.pw})
+				'body': JSON.stringify({'name': this.user, 'password': this.pw})
 			});
-			this.logger.debug('Result from createIdentity: '+jsonPrint(r));
+			this.logger.debug('Result from creating identity: '+jsonPrint(r));
+			// id is auto-generated
+			this.id = r.id;
+			// correct the auth header to account for the new id value
+			this.setUserPassword(this.id, this.pw);
 			return r;
-
-		} else {
-
-			this.logger.info('Self-registration is disabled');
-			this.logger.info(`Creating agent: ${this.user}`);
-			try {
-				const r = await this.request('agents', {
-					'headers': {'Authorization': admin_auth},
-					'method': 'POST',
-					'body': JSON.stringify({'name': this.user, 'password': this.pw + '1'})
-				});
-				this.logger.debug('Result from creating identity: '+jsonPrint(r));
-
-				this.logger.info(`Changing ${this.user}'s password`);
-			} catch (error) {
-				this.logger.error(`Failed to create identity: ${error}`);
-				if (error.code === 504) {
-					this.logger.warn('Giving the agent a little more time to finish...');
-					await new Promise((resolve, reject) => {
-						setTimeout(resolve, 20000);
-					});
-				} else {
-					throw error;
-				}
-			}
-
-			const my_auth = 'Basic ' + Buffer.from(this.id + ':' + this.pw).toString('base64');
-			this.logger.info(`Setting ${this.user}'s password`);
-			const r = await this.request(`agents/${this.id}/password`, {
-				'headers': {'Authorization': my_auth},
-				'method': 'POST',
-				'body': JSON.stringify({password_old:  this.pw + '1', password_new: this.pw})
-			});
-			this.logger.info(`Set ${this.user}'s password`);
-			return r;
+		} catch (error) {
+			this.logger.error(`Failed to create identity: ${error}`);
+			throw error;
 		}
+	}
 
-
+	/**
+	 * Delete agent.
+	 *
+	 * @param {boolean} force To delete an account agent with child agents, force will need to be true.
+	 * @return {Promise<void>} A promise that resolves when the agent is deleted.
+	 */
+	async deleteIdentity (force) {
+		let query = '';
+		if (force && force === true) {
+			query = '?force';
+		}
+		this.logger.info(`Deleting agent info for ${this.user}`);
+		await this.request(`agents/${this.id}${query}`, {
+			'method': 'DELETE'
+		});
+		this.logger.debug(`Successfully deleted user ${this.user}`);
 	}
 
 	/**
@@ -308,7 +291,7 @@ class Agent {
 			throw new TypeError('Invalid seed for onboarding as a Trust Anchor');
 
 		const body = {
-			role: { name: 'ENDORSER' }
+			role: {name: 'ENDORSER'}
 		};
 
 		this.logger.info(`Registering ${this.user} as a Trust Anchor`);
@@ -507,27 +490,23 @@ class Agent {
 	 * credential schemas matching the search parameters.  You can use the `route` parameter to direct the request to
 	 * other agents.
 	 *
+	 * @param {boolean} [all] Indicates whether query should include other agents who have registered their credential schemas.
 	 * @param {CredentialSchemaQueryParams} [opts] An optional filter for the schemas that are returned.
-	 * @param {QueryRoute} [route] A list of parameters used to proxy the request to other agents.
 	 * @return {Promise<CredentialSchema[]>} A promise that resolves with a list of credential schemas.
 	 */
-	async getCredentialSchemas (opts, route) {
+	async getCredentialSchemas (all, opts) {
 		let query = '';
+		if (all) {
+			if (typeof all !== 'boolean')
+				throw new TypeError('Invalid "all" parameters');
+
+			query = '?all';
+		}
+
 		if (opts) {
 			if (typeof opts !== 'object')
 				throw new TypeError('Invalid query parameters');
-			query = `?filter=${JSON.stringify(opts)}`;
-		}
-
-		if (route) {
-			if (typeof route !== 'object')
-				throw new TypeError('Invalid route parameters');
-
-			let routeparams = 'route=';
-			for (const key in route) {
-				routeparams += `${key}:${route[key]},`;
-			}
-			query = query ? `${query}&${routeparams}` : `?${routeparams}`;
+			query = `${query}${(query.length === 0 ? '?' : '&')}filter=${JSON.stringify(opts)}`;
 		}
 
 		this.logger.info('Getting credential schemas');
@@ -602,38 +581,36 @@ class Agent {
 	 * there are other queries you can make.
 	 * {
 	 *     schema_name: 'My Schema',
-	 *     version: { $ne: '1.0' }
+	 *     version: { $ne: '1.0' },
+	 *     owner_did: 'A4DXofjbeC97WZAHU5MVGK'
 	 * }
 	 * @typedef {object} CredentialDefinitionQueryParams
 	 * @property {string} [id] The ID of the credential definition
 	 * @property {string} [schema_name] The name of the schema for the credential definition
+	 * @property {string} [owner_did] The public DID of the agent who published the credential definition
 	 */
 
 	/**
 	 * Get a list of {@link CredentialDefinition}s matching the given parameters, or all of them, if no parameters are
 	 * given.
 	 *
+	 * @param {boolean} [all] Indicates whether query should include other agents who have registered their credential definitions.
 	 * @param {CredentialDefinitionQueryParams} [opts] Credential definition search parameters.
-	 * @param {QueryRoute} [route] A list of parameters used to proxy the request to other agents.
 	 * @return {Promise<CredentialDefinition[]>} A promise that resolves with a list of credential definitions.
 	 */
-	async getCredentialDefinitions (opts, route) {
+	async getCredentialDefinitions (all, opts) {
 		let query = '';
+		if (all) {
+			if (typeof all !== 'boolean')
+				throw new TypeError('Invalid "all" parameters');
+
+			query = '?all';
+		}
+
 		if (opts) {
 			if (typeof opts !== 'object')
 				throw new TypeError('Invalid query parameters');
-			query = `?filter=${JSON.stringify(opts)}`;
-		}
-
-		if (route) {
-			if (typeof route !== 'object')
-				throw new TypeError('Invalid route parameters');
-
-			let routeparams = 'route=';
-			for (const key in route) {
-				routeparams += `${key}:${route[key]},`;
-			}
-			query = query ? `${query}&${routeparams}` : `?${routeparams}`;
+			query = `${query}${(query.length === 0 ? '?' : '&')}filter=${JSON.stringify(opts)}`;
 		}
 
 		this.logger.info('Getting credential definitions');
@@ -794,9 +771,9 @@ class Agent {
 
 		this.logger.info('Getting proof schemas');
 		this.logger.info(`Getting proof schemas that match: ${query}`);
-		let r = await this.request('proof_schemas');
+		let r = await this.request(`proof_schemas${query}`);
 		if (r.items) r = r.items;
-		this.logger.info(`Got ${r.length} credential definitions`);
+		this.logger.info(`Got ${r.length} proof schemas`);
 		this.logger.debug('Result from getProofSchemas: '+jsonPrint(r));
 		return r;
 	}
@@ -925,8 +902,8 @@ class Agent {
 		if (properties && typeof properties !== 'object')
 			throw new TypeError('Invalid invitation properties');
 
-		this.logger.info(`Creating invitation`);
-		let body = {};
+		this.logger.info('Creating invitation');
+		const body = {};
 		if (properties) {
 			body.properties = properties;
 		}
@@ -1206,7 +1183,7 @@ class Agent {
 	//			this.logger.info(`Accepting incoming connection offer ${incoming_connections[0].id} instead of sending my own offer`);
 	//			return this.acceptConnection(incoming_connections[0].id, properties);
 	//		}
-    //
+	//
 	//		this.logger.info(`No existing connection/offer found. Sending connection offer to ${JSON.stringify(to)}`);
 	//		body.to = to;
 	//	}
@@ -1233,13 +1210,13 @@ class Agent {
 	async acceptConnection (connection, properties) {
 		if (!connection)
 			throw new TypeError('Connection information was not provided');
-	
+
 		let method, body, route;
 		if (typeof connection === 'string') {
-	
+
 			if (properties && typeof properties !== 'object')
 				throw new TypeError('Invalid properties for accepting connection');
-	
+
 			this.logger.info(`Accepting existing connection with id ${connection}`);
 			method = 'PATCH';
 			route = `connections/${connection}`;
@@ -1250,27 +1227,27 @@ class Agent {
 				}
 			};
 			if (!body.properties.type) body.properties.type = 'child';
-	
+
 			// Add an optional friendly name to the request
 			if (this.name && !body.properties.name) body.properties.name = this.name;
-	
+
 			// It's useful to timestamp offers so you can sort them by most recent
 			if (!body.properties.time) body.properties.time = (new Date()).toISOString();
-	
+
 		} else if (typeof connection === 'object') {
-	
+
 			if (!connection.local || !connection.local.url)
 				throw new TypeError('Out-of-band connection offer had invalid offerer information');
-	
+
 			this.logger.info(`Establishing out-of-band connection with ${connection.local.url}`);
 			body = connection;
 			route ='connections';
 			method = 'POST';
-	
+
 		} else {
 			throw new TypeError('Invalid connection information');
 		}
-	
+
 		this.logger.debug(`Connection acceptance parameters: ${jsonPrint(body)}`);
 		const r = await this.request(route, {
 			method: method,
@@ -2003,7 +1980,7 @@ class Agent {
 	 *
 	 * @param {string} path The REST API path
 	 * @param {object} [options] Set headers, method=GET, POST, PUT, PATCH, DELETE, UPDATE by passing in object {"headers":{...}, "method":...}
-	 * @return {object} The response object
+	 * @return {object} The response object.  May be null if request returns no content.
 	 */
 	async request (path, options) {
 
@@ -2031,14 +2008,16 @@ class Agent {
 			if (!options.headers['Authorization']) options.headers['Authorization'] = this.authHeader;
 			this.logger.debug('Request: ' + request_url + ' ' + jsonPrint(options));
 			const fetch_response = await fetch(request_url, options);
+			let json_response = null;
+			const responseText = await fetch_response.text();
+			try {
+				json_response = await JSON.parse(responseText);
+			} catch (err) {
+				this.logger.error(`Fetch response error could not be parsed as JSON: ${err}`);
+			}
 			if (!fetch_response.ok) {
-				let error = await fetch_response.text();
-				try {
-					error = await JSON.parse(error);
-				} catch (err) {
-					this.logger.error(`Fetch response error could not be parsed as JSON: ${err}`);
-				}
-				if (error.message) {
+				let error = json_response;
+				if (error && error.message) {
 					error = error.message;
 				}
 				if (!error) {
@@ -2050,7 +2029,6 @@ class Agent {
 				e.code = status;
 				throw e;
 			}
-			const json_response = await fetch_response.json();
 			this.logger.debug('Result from request: ', json_response);
 			return json_response;
 		} catch (e) {
