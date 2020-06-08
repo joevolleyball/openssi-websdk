@@ -198,15 +198,15 @@ class Agent {
 	/**
 	 * Represents an agent on a given cloud agent account.
 	 * @typedef {object} AgentInfo
+	 * @property {string} id The id of the agent.
 	 * @property {AgentName} name The name of the agent.
-	 * @property {AgentURL} url The connection url for the agent.
-	 * @property {string|null} role The role of the agent.  TRUST_ANCHORs are allowed to publish credential schemas and
-	 * definitions.
+	 * @property {AgentURL} url The url for the agent.
+	 * @property {AgentURL} url The url that represents the agent in a connection object.
 	 * @property {Verkey} verkey The public key for the agent.
-	 * @property {DID} did The DID for the agent.
 	 * @property {string} creation_time A datetime string for when the agent was created.
-	 * @property {number} expiration A timestamp, in milliseconds, for when the agent's password expires.
-	 * @property {object} metrics Metrics about the agent, such as incoming connections, etc.
+	 * @property {DID} did The DID for the agent.
+	 * @property {boolean} issuer Whether the agent is an ENDORSER on the default ledger.  ENDORSERs are allowed to publish credential schemas and
+	 * definitions.
 	 */
 
 	/**
@@ -1110,95 +1110,6 @@ class Agent {
 	 */
 
 	/**
-	 * Create a {@link Connection}.  If recipient information is provided, the agent will attempt to contact the
-	 * recipient agent and create an inbound connection offer on that agent.  Otherwise, the connection offer is only
-	 * created on this agent, and the returned object must be passed to the intended recipient agent out-of-band in
-	 * order to establish the connection.
-	 *
-	 * @param {ConnectionRecipient} [to] The recipient agent.
-	 * @param {Properties} [properties] Optional metadata to add to the connection offer.
-	 * @return {Promise<Connection>} The connection offer, or the active {@link Connection} if one is already established.
-	 */
-	//async createConnection (to, properties) {
-	//	if (properties && typeof properties !== 'object')
-	//		throw new TypeError('Invalid properties for credential offer');
-	//
-	//	// Create the connection offer with optional metadata
-	//	const body = {
-	//		properties: properties ? properties : {}
-	//	};
-	//	if (!body.properties.type) body.properties.type = 'child';
-	//
-	//	// Add an optional friendly name to the request
-	//	if (this.name && !body.properties.name) body.properties.name = this.name;
-	//
-	//	// It's useful to timestamp offers so you can sort them by most recent
-	//	if (!body.properties.time) body.properties.time = (new Date()).toISOString();
-	//
-	//	if (to) {
-	//		if (!to.url && !to.name)
-	//			throw new TypeError('Must specify an agent name or agent url to send a connection offer');
-	//		if (to.url && to.name)
-	//			throw new TypeError('Must specify only an agent name or an agent url for a connection, not both');
-	//		if (to.url && typeof to.url !== 'string')
-	//			throw new TypeError('Invalid agent url for connection offer');
-	//		if (to.name && typeof to.name !== 'string')
-	//			throw new TypeError('Invalid agent name for connection offer');
-	//
-	//		// Return any active connections
-	//		let search;
-	//		if (to.url)
-	//			search = {
-	//				'remote.url': to.url
-	//			};
-	//		else
-	//			search = {
-	//				'remote.name': to.name
-	//			};
-	//
-	//		const incoming_connections = [], offered_connections = [];
-	//
-	//		this.logger.info(`Checking for existing connections to ${JSON.stringify(to)}`);
-	//		const all_remote_connections = await this.getConnections(search);
-	//
-	//		for (const index in all_remote_connections) {
-	//			const state = all_remote_connections[index].state;
-	//			if (state === 'connected') {
-	//				this.logger.info(`Reusing existing connection ${all_remote_connections[index].id}`);
-	//				return all_remote_connections[index]; // Reuse active connections
-	//			} else if (state === 'inbound_offer')
-	//				incoming_connections.push(all_remote_connections[index]);
-	//			else if (state === 'outbound_offer')
-	//				offered_connections.push(all_remote_connections[index]);
-	//		}
-	//
-	//		// Return an existing offer, if we've already made one
-	//		if (offered_connections.length) {
-	//			this.logger.info(`Keeping existing connection offer ${offered_connections[0].id}`);
-	//			return offered_connections[0];
-	//		}
-	//
-	//		// Accept inbound offers from the offeree before sending more offers
-	//		if (incoming_connections.length) {
-	//			this.logger.info(`Accepting incoming connection offer ${incoming_connections[0].id} instead of sending my own offer`);
-	//			return this.acceptConnection(incoming_connections[0].id, properties);
-	//		}
-	//
-	//		this.logger.info(`No existing connection/offer found. Sending connection offer to ${JSON.stringify(to)}`);
-	//		body.to = to;
-	//	}
-	//
-	//	this.logger.debug(`Connection offer parameters: ${jsonPrint(body)}`);
-	//	const r = await this.request('connections', {
-	//		'method': 'POST',
-	//		'body': JSON.stringify(body)
-	//	});
-	//	this.logger.info(`Created connection offer ${r.id}`);
-	//	this.logger.debug('Result from createConnection: '+jsonPrint(r));
-	//	return r;
-	//}
-
-	/**
 	 * Accept a connection offer.  If a connection id is passed, that connection will be updated from state
 	 * `inbound_offer` to `connected` on this agent.  If a connection offer object from another agent is passed, the
 	 * connection will be created and set to the `connected` state on this agent.
@@ -1764,13 +1675,13 @@ class Agent {
 	 * @returns {Promise<Verification>} A promise that resolves with the created verification.
 	 */
 	async createVerification (to, proof_schema_id, state, properties) {
-		if (!to || !to.did && !to.name)
-			throw new TypeError('Must specify an agent name or agent url to send a verification');
-		if (to.did && to.name)
-			throw new TypeError('Must specify only an agent name or an agent url for a verification, not both');
+		if (!to || !to.did && !to.id)
+			throw new TypeError('Must specify an agent id or agent did to send a verification');
+		if (to.did && to.id)
+			throw new TypeError('Must specify only an agent id or an agent did for a verification, not both');
 		if (to.did && typeof to.did !== 'string')
-			throw new TypeError('Invalid agent url for verification');
-		if (to.name && typeof to.name !== 'string')
+			throw new TypeError('Invalid agent did for verification');
+		if (to.id && typeof to.id !== 'string')
 			throw new TypeError('Invalid agent name for verification');
 
 		if (!proof_schema_id || typeof proof_schema_id !== 'string')
